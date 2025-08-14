@@ -249,3 +249,5 @@ Better statistics: Excludes infinite values from ratio calculations
 Debug output: Shows how many entries are being processed and matched
 The script should now run without errors and provide more accurate matching results. The number of matched queries should be much more reasonable (likely in the hundreds rather than thousands), and the performance ratios should be finite numbers that can be properly visualized.
 ```
+
+From here I fixed up a lot of bad code, and re promted it to make better graphs

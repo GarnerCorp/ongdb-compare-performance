@@ -2,7 +2,7 @@ import polars as pl
 import re
 import argparse
 from datetime import datetime
-from plots import  plot_matching_queries
+from plots import  plot_matching_queries, plot_regression_histogram
 import os
 
 
@@ -207,7 +207,7 @@ def get_matching_query_stats(matched_df: pl.DataFrame, version_col: str) -> dict
 
     return stats
 
-def analyze_query_regressions(matched_df: pl.DataFrame, version1: str = "Version 1", version2: str = "Version 2") -> dict:
+def analyze_query_regressions(matched_df: pl.DataFrame) -> dict:
     """
     Analyze the query performance regressions and return summary statistics.
 
@@ -315,22 +315,28 @@ if __name__ == "__main__":
 
             print(f"\nQueries where {args.version2} is slower than {args.version1}: {len(regressions_v2_slower)}")
             if len(regressions_v2_slower) > 0:
-                regression_analysis_v2 = analyze_query_regressions(regressions_v2_slower, args.version1, args.version2)
+                regression_analysis_v2 = analyze_query_regressions(regressions_v2_slower)
                 print(f"\n{args.version2} Regression Analysis:")
                 printItems(regression_analysis_v2)
 
             print(f"\nQueries where {args.version1} is slower than {args.version2}: {len(regressions_v1_slower)}")
+            regressions_v1_slower_swapped = None
             if len(regressions_v1_slower) > 0:
                 regressions_v1_slower_swapped = regressions_v1_slower.with_columns([
                     (pl.col('ms_1_0_6') - pl.col('ms_1_1_0')).alias('performance_regression'),
                     (pl.col('ms_1_0_6') / pl.col('ms_1_1_0')).alias('performance_ratio')
                 ])
-                regression_analysis_v1 = analyze_query_regressions(regressions_v1_slower_swapped, args.version2, args.version1)
+                regression_analysis_v1 = analyze_query_regressions(regressions_v1_slower_swapped)
                 print(f"\n{args.version1} Regression Analysis:")
                 printItems(regression_analysis_v1)
 
             print(f"\nGenerating regression analysis graphs for {args.version2} slower cases...")
             plot_matching_queries(all_matched_queries, args.version1, args.version2)
+
+            print("\nGenerating regression histogram comparing both versions...")
+            # Use the swapped DataFrame for v1 regressions to get correct ratios
+            v1_regressions_for_plot = regressions_v1_slower_swapped if regressions_v1_slower_swapped is not None else pl.DataFrame()
+            plot_regression_histogram(v1_regressions_for_plot, regressions_v2_slower, args.version1, args.version2)
 
         else:
             print("No matching queries found between the two datasets.")

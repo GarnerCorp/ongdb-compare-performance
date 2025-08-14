@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import polars as pl
+import numpy as np
 
 def plot_matching_queries(matched_df: pl.DataFrame, version1: str = "Version-1", version2: str = "Version-2") -> None:
     """
@@ -60,4 +61,163 @@ def plot_matching_queries(matched_df: pl.DataFrame, version1: str = "Version-1",
     plt.tight_layout()
     plt.savefig(f'plots/query_performance_comparison-{version1}.png', dpi=300, bbox_inches='tight')
     print(f"Query performance comparison saved as 'plots/query_performance_comparison-{version1}.png'")
+    plt.close(fig)
+
+def plot_regression_histogram(regressions_v1: pl.DataFrame, regressions_v2: pl.DataFrame,
+                            version1: str = "Version-1", version2: str = "Version-2") -> None:
+    """
+    Create a stacked histogram of performance ratios for queries that regressed in each version.
+
+    Args:
+        regressions_v1 (pl.DataFrame): DataFrame with queries where version1 is slower
+        regressions_v2 (pl.DataFrame): DataFrame with queries where version2 is slower
+        version1 (str): Name of the first version
+        version2 (str): Name of the second version
+    """
+    if len(regressions_v1) == 0 and len(regressions_v2) == 0:
+        print("No regressions found in either version for histogram plotting.")
+        return
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    # Extract performance ratios and filter out infinite values
+    v1_ratios = []
+    v2_ratios = []
+
+    if len(regressions_v1) > 0:
+        v1_ratios_df = regressions_v1.filter(
+            pl.col('performance_ratio').is_not_null() &
+            pl.col('performance_ratio').is_finite() &
+            (pl.col('performance_ratio') > 0) &
+            (pl.col('performance_ratio') <= 16)  # Cap at 16
+        )
+        if len(v1_ratios_df) > 0:
+            v1_ratios = v1_ratios_df.select(pl.col('performance_ratio')).to_numpy().flatten()
+        else:
+            print("Debug: v1_ratios_df is empty after filtering")
+
+    if len(regressions_v2) > 0:
+        v2_ratios_df = regressions_v2.filter(
+            pl.col('performance_ratio').is_not_null() &
+            pl.col('performance_ratio').is_finite() &
+            (pl.col('performance_ratio') > 0) &
+            (pl.col('performance_ratio') <= 16)  # Cap at 16
+        )
+        if len(v2_ratios_df) > 0:
+            v2_ratios = v2_ratios_df.select(pl.col('performance_ratio')).to_numpy().flatten()
+        else:
+            print("Debug: v2_ratios_df is empty after filtering")
+
+    if len(v1_ratios) == 0 and len(v2_ratios) == 0:
+        print("No valid performance ratios for histogram plotting.")
+        return
+
+    # Determine histogram bins based on the data range
+    all_ratios = []
+    if len(v1_ratios) > 0:
+        all_ratios.extend(v1_ratios)
+    if len(v2_ratios) > 0:
+        all_ratios.extend(v2_ratios)
+
+    # Use log base 2 spaced bins for better visualization of performance ratios
+    min_ratio = max(1.0, min(all_ratios))  # Start from 1.0 (no regression)
+    max_ratio = min(16.0, max(all_ratios))  # Cap at 16
+
+    # Create log base 2 spaced bins
+    bins = np.logspace(np.log2(min_ratio), np.log2(max_ratio), 30, base=2)
+
+    # Calculate histogram values for both datasets
+    v1_counts = np.zeros(len(bins)-1)
+    v2_counts = np.zeros(len(bins)-1)
+
+    if len(v1_ratios) > 0:
+        v1_counts, _ = np.histogram(v1_ratios, bins=bins)
+
+    if len(v2_ratios) > 0:
+        v2_counts, _ = np.histogram(v2_ratios, bins=bins)
+
+    # Create the layered histogram with opaque bars
+    bin_centers = (bins[:-1] + bins[1:]) / 2
+    bin_widths = bins[1:] - bins[:-1]
+
+    # Track which labels have been added
+    v1_labeled = False
+    v2_labeled = False
+    equal_labeled = False
+
+    # Determine which bars to plot and in what order
+    for i in range(len(bin_centers)):
+        v1_count = v1_counts[i]
+        v2_count = v2_counts[i]
+
+        if v1_count == 0 and v2_count == 0:
+            continue
+        elif v1_count == v2_count and v1_count > 0:
+            # Same height - plot green bar
+            ax.bar(bin_centers[i], v1_count, width=bin_widths[i],
+                   color='green', edgecolor='black', linewidth=1,
+                   label='Equal Regression Counts' if not equal_labeled else "")
+            equal_labeled = True
+        else:
+            # Different heights - plot taller bar first (behind), then shorter bar
+            if v1_count > v2_count:
+                # v1 is taller, plot it first (behind)
+                if v1_count > 0:
+                    ax.bar(bin_centers[i], v1_count, width=bin_widths[i],
+                           color='blue', edgecolor='black', linewidth=1,
+                           label=f'{version1} Regression Counts (n={len(v1_ratios)})' if not v1_labeled else "")
+                    v1_labeled = True
+                if v2_count > 0:
+                    ax.bar(bin_centers[i], v2_count, width=bin_widths[i],
+                           color='red', edgecolor='black', linewidth=1,
+                           label=f'{version2} Regression Counts (n={len(v2_ratios)})' if not v2_labeled else "")
+                    v2_labeled = True
+            else:
+                # v2 is taller, plot it first (behind)
+                if v2_count > 0:
+                    ax.bar(bin_centers[i], v2_count, width=bin_widths[i],
+                           color='red', edgecolor='black', linewidth=1,
+                           label=f'{version2} Regression Counts (n={len(v2_ratios)})' if not v2_labeled else "")
+                    v2_labeled = True
+                if v1_count > 0:
+                    ax.bar(bin_centers[i], v1_count, width=bin_widths[i],
+                           color='blue', edgecolor='black', linewidth=1,
+                           label=f'{version1} Regression Counts (n={len(v1_ratios)})' if not v1_labeled else "")
+                    v1_labeled = True
+
+    # Set log base 2 scale on both axes
+    ax.set_xscale('log', base=2)
+    ax.set_yscale('log', base=2)
+
+
+    # Add vertical lines at common regression thresholds
+    for threshold, label in [(2.0, '2x slower'), (4.0, '4x slower'), (8.0, '8x slower')]:
+        if threshold <= max_ratio:
+            ax.axvline(x=threshold, color='gray', linestyle=':', alpha=0.5, label=f'{label}')
+
+    ax.set_xlabel('Performance Ratio (slower_version / faster_version) [log₂ scale, capped at 16x]')
+    ax.set_ylabel('Number of Queries [log₂ scale]')
+    ax.set_title(f'Distribution of Performance Regression Counts: {version1} vs {version2}')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # Add text box with summary statistics
+    summary_text = []
+    if len(v1_ratios) > 0:
+        summary_text.append(f'{version1} regressions: {len(v1_ratios)}')
+        summary_text.append(f'  Median ratio: {np.median(v1_ratios):.2f}x')
+        summary_text.append(f'  Max ratio: {np.max(v1_ratios):.2f}x')
+
+    if len(v2_ratios) > 0:
+        summary_text.append(f'{version2} regressions: {len(v2_ratios)}')
+        summary_text.append(f'  Median ratio: {np.median(v2_ratios):.2f}x')
+        summary_text.append(f'  Max ratio: {np.max(v2_ratios):.2f}x')
+
+    if summary_text:
+        ax.text(0.80, 0.98, '\n'.join(summary_text), transform=ax.transAxes,
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+    plt.tight_layout()
+    plt.savefig(f'plots/regression_histogram-{version1}-vs-{version2}.png', dpi=300, bbox_inches='tight')
+    print(f"Regression histogram saved as 'plots/regression_histogram-{version1}-vs-{version2}.png'")
     plt.close(fig)
