@@ -2,9 +2,7 @@ import pandas as pd
 import re
 from datetime import datetime
 from typing import Optional, Tuple
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from matplotlib.figure import Figure
+
 
 def extract_timestamp_and_ms(csv_file_path: str) -> pd.DataFrame:
     """
@@ -215,93 +213,6 @@ def find_matching_queries(df1: pd.DataFrame, df2: pd.DataFrame,
 
     print(f"Found {len(matched_queries)} unique matching queries with performance regressions")
     return pd.DataFrame(matched_queries)
-
-def plot_matching_queries(matched_df: pd.DataFrame, save_plot: bool = True) -> None:
-    """
-    Create visualizations for matching queries showing performance regressions.
-
-    Args:
-        matched_df (pd.DataFrame): DataFrame with matched queries
-        save_plot (bool): Whether to save the plot to file
-    """
-    if len(matched_df) == 0:
-        print("No matching queries found with performance regressions.")
-        return
-
-    # Filter out any infinite or NaN values that might cause plotting issues
-    plot_df = matched_df[
-        (matched_df['performance_ratio'].notna()) &
-        (matched_df['performance_ratio'] != float('inf')) &
-        (matched_df['performance_ratio'] != float('-inf'))
-    ].copy()
-
-    if len(plot_df) == 0:
-        print("No valid data for plotting after filtering infinite values.")
-        return
-
-    print(f"Plotting {len(plot_df)} valid regression entries...")
-
-    # Create figure with subplots
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
-    fig.suptitle('Query Performance Regression Analysis', fontsize=16, fontweight='bold')
-
-    # Plot 1: Scatter plot comparing 1.0.6 vs 1.1.0 performance
-    ax1.scatter(plot_df['ms_1_0_6'], plot_df['ms_1_1_0'],
-               alpha=0.7, s=50, color='red')
-
-    # Add diagonal line (y=x) for reference
-    min_ms = min(plot_df['ms_1_0_6'].min(), plot_df['ms_1_1_0'].min())
-    max_ms = max(plot_df['ms_1_0_6'].max(), plot_df['ms_1_1_0'].max())
-    ax1.plot([min_ms, max_ms], [min_ms, max_ms], 'k--', alpha=0.5, label='Equal Performance')
-
-    ax1.set_xlabel('1.0.6 Query Time (ms)')
-    ax1.set_ylabel('1.1.0 Query Time (ms)')
-    ax1.set_title('Query Performance Comparison')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-
-    # Plot 2: Performance regression distribution
-    ax2.hist(plot_df['performance_regression'], bins=30, alpha=0.7,
-             color='orange', edgecolor='black')
-    ax2.set_xlabel('Performance Regression (ms)')
-    ax2.set_ylabel('Frequency')
-    ax2.set_title('Distribution of Performance Regressions')
-    ax2.grid(True, alpha=0.3)
-
-    # Plot 3: Performance ratio distribution (cap extreme values for better visualization)
-    ratio_data = plot_df['performance_ratio']
-    # Cap ratios at 95th percentile for better visualization
-    ratio_cap = ratio_data.quantile(0.95)
-    ratio_capped = ratio_data.clip(upper=ratio_cap)
-
-    ax3.hist(ratio_capped, bins=30, alpha=0.7,
-             color='purple', edgecolor='black')
-    ax3.set_xlabel(f'Performance Ratio (1.1.0 / 1.0.6) [capped at {ratio_cap:.1f}x]')
-    ax3.set_ylabel('Frequency')
-    ax3.set_title('Distribution of Performance Ratios')
-    ax3.grid(True, alpha=0.3)
-
-    # Plot 4: Time series of regressions
-    ax4.scatter(plot_df['timestamp_1_0_6'], plot_df['performance_regression'],
-               alpha=0.7, s=30, color='red', label='Regression Amount')
-    ax4.set_xlabel('Timestamp (1.0.6)')
-    ax4.set_ylabel('Performance Regression (ms)')
-    ax4.set_title('Performance Regressions Over Time')
-    ax4.legend()
-    ax4.grid(True, alpha=0.3)
-
-    # Format x-axis for better readability
-    ax4.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-    ax4.xaxis.set_major_locator(mdates.MinuteLocator(interval=10))
-    plt.setp(ax4.xaxis.get_majorticklabels(), rotation=45)
-
-    plt.tight_layout()
-
-    if save_plot:
-        plt.savefig('query_performance_regression.png', dpi=300, bbox_inches='tight')
-        print("Regression analysis graph saved as 'query_performance_regression.png'")
-
-    plt.show()
 
 def analyze_query_regressions(matched_df: pd.DataFrame) -> dict:
     """
