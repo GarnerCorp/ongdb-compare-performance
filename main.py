@@ -64,6 +64,9 @@ def extract_timestamp_and_ms(csv_file_path: str) -> pl.DataFrame:
         'original_text': original_texts
     })
 
+    print(f"Extracted {len(result_df)} entries from {csv_file_path}")
+    print(f"Valid entries with timestamp/ms: {len(result_df.filter(pl.col('milliseconds').is_not_null()))}")
+
     return result_df
 
 def extract_query_text(text_payload: str) -> str:
@@ -245,7 +248,18 @@ def analyze_query_regressions(matched_df: pl.DataFrame) -> dict:
 
     return analysis
 
-def printItems(items: dict):
+def filter_zero_ms_entries(df: pl.DataFrame,  version: str, ) -> pl.DataFrame:
+    df_valid = df.filter(pl.col('milliseconds').is_not_null())
+    df_zero_count = len(df_valid.filter(pl.col('milliseconds') == 0))
+    df_filtered = df_valid.filter(pl.col('milliseconds') > 0)
+
+    print(f"\nFiltered out {df_zero_count} entries with 0ms from {version}")
+    print(f"Remaining entries for {version}: {len(df_filtered)}")
+
+    return df_filtered
+
+def printItems(items: dict, versionAndHeader: str = ""):
+    print(f"\n{versionAndHeader} (Matching Queries Only):")
     for key, value in items.items():
         if isinstance(value, float):
             print(f"  {key}: {value:.2f}")
@@ -267,57 +281,29 @@ if __name__ == "__main__":
         df1 = extract_timestamp_and_ms(args.logs1)
         df2 = extract_timestamp_and_ms(args.logs2)
 
-        print(f"Extracted {len(df1)} entries from {args.logs1}")
-        print(f"Valid entries with timestamp/ms: {len(df1.filter(pl.col('milliseconds').is_not_null()))}")
+        df1_filtered = filter_zero_ms_entries(df1, args.version1)
+        df2_filtered = filter_zero_ms_entries(df2, args.version2)
 
-        print(f"Extracted {len(df2)} entries from {args.logs2}")
-        print(f"Valid entries with timestamp/ms: {len(df2.filter(pl.col('milliseconds').is_not_null()))}")
-
-        # Filter out 0ms entries and report counts
-        df1_valid = df1.filter(pl.col('milliseconds').is_not_null())
-        df2_valid = df2.filter(pl.col('milliseconds').is_not_null())
-
-        df1_zero_count = len(df1_valid.filter(pl.col('milliseconds') == 0))
-        df2_zero_count = len(df2_valid.filter(pl.col('milliseconds') == 0))
-
-        df1_filtered = df1_valid.filter(pl.col('milliseconds') > 0)
-        df2_filtered = df2_valid.filter(pl.col('milliseconds') > 0)
-
-        print(f"\nFiltered out {df1_zero_count} entries with 0ms from {args.version1}")
-        print(f"Remaining entries for {args.version1}: {len(df1_filtered)}")
-        print(f"\nFiltered out {df2_zero_count} entries with 0ms from {args.version2}")
-        print(f"Remaining entries for {args.version2}: {len(df2_filtered)}")
-
-        # Find all matching queries (not just regressions)
-        print("\nFinding all matching queries...")
         all_matched_queries = find_all_matching_queries(df1_filtered, df2_filtered, time_threshold_ms=10000)
 
         if len(all_matched_queries) > 0:
             same_time_queries = all_matched_queries.filter(pl.col('ms_1') == pl.col('ms_2'))
             print(f"Queries with exact same timing: {len(same_time_queries)}")
-
             print(f"Found {len(all_matched_queries)} total matching queries between {args.version1} and {args.version2}")
 
-            # Get performance stats for just the matching queries
             matching_stats1 = get_matching_query_stats(all_matched_queries, version_col='ms_1')
             matching_stats2 = get_matching_query_stats(all_matched_queries, version_col='ms_2')
 
-            print(f"\n{args.version1} Performance Stats (Matching Queries Only):")
-            printItems(matching_stats1)
+            printItems(matching_stats1, args.version1 + " Performance Stats")
+            printItems(matching_stats2, args.version2 + " Performance Stats")
 
-            print(f"\n{args.version2} Performance Stats (Matching Queries Only):")
-            printItems(matching_stats2)
-
-            # Analyze performance regressions in both directions
-            print("\nAnalyzing performance changes in both directions...")
             regressions_v2_slower = all_matched_queries.filter(pl.col('ms_2') > pl.col('ms_1'))
             regressions_v1_slower = all_matched_queries.filter(pl.col('ms_1') > pl.col('ms_2'))
 
             print(f"\nQueries where {args.version2} is slower than {args.version1}: {len(regressions_v2_slower)}")
             if len(regressions_v2_slower) > 0:
                 regression_analysis_v2 = analyze_query_regressions(regressions_v2_slower)
-                print(f"\n{args.version2} Regression Analysis:")
-                printItems(regression_analysis_v2)
+                printItems(regression_analysis_v2, args.version2 + " Regression Analysis:")
 
             print(f"\nQueries where {args.version1} is slower than {args.version2}: {len(regressions_v1_slower)}")
             regressions_v1_slower_swapped = None
@@ -327,10 +313,8 @@ if __name__ == "__main__":
                     (pl.col('ms_1') / pl.col('ms_2')).alias('performance_ratio')
                 ])
                 regression_analysis_v1 = analyze_query_regressions(regressions_v1_slower_swapped)
-                print(f"\n{args.version1} Regression Analysis:")
-                printItems(regression_analysis_v1)
+                printItems(regression_analysis_v1, args.version1 + " Regression Analysis:")
 
-            print(f"\nGenerating regression analysis graphs for {args.version2} slower cases...")
             plot_matching_queries(all_matched_queries, args.version1, args.version2)
 
             print("\nGenerating regression histogram comparing both versions...")
