@@ -1,13 +1,12 @@
-import pandas as pd
+import polars as pl
 import re
 import argparse
 from datetime import datetime
-from typing import Optional, Tuple
 from plots import  plot_matching_queries
 import os
 
 
-def extract_timestamp_and_ms(csv_file_path: str) -> pd.DataFrame:
+def extract_timestamp_and_ms(csv_file_path: str) -> pl.DataFrame:
     """
     Extract timestamp and milliseconds from the textPayload column of a CSV file.
 
@@ -15,9 +14,9 @@ def extract_timestamp_and_ms(csv_file_path: str) -> pd.DataFrame:
         csv_file_path (str): Path to the CSV file
 
     Returns:
-        pd.DataFrame: DataFrame with columns 'timestamp', 'milliseconds', and 'original_text'
+        pl.DataFrame: DataFrame with columns 'timestamp', 'milliseconds', and 'original_text'
     """
-    df = pd.read_csv(csv_file_path)
+    df = pl.read_csv(csv_file_path)
 
     if 'textPayload' not in df.columns:
         raise ValueError("textPayload column not found in CSV file")
@@ -31,7 +30,7 @@ def extract_timestamp_and_ms(csv_file_path: str) -> pd.DataFrame:
     pattern = r"'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\+\d{4}) INFO\s+(\d+) ms:"
 
     for idx, text_payload in enumerate(df['textPayload']):
-        if pd.isna(text_payload):
+        if text_payload is None:
             timestamps.append(None)
             milliseconds.append(None)
             original_texts.append(None)
@@ -59,7 +58,7 @@ def extract_timestamp_and_ms(csv_file_path: str) -> pd.DataFrame:
             milliseconds.append(None)
             original_texts.append(text_payload)
 
-    result_df = pd.DataFrame({
+    result_df = pl.DataFrame({
         'timestamp': timestamps,
         'milliseconds': milliseconds,
         'original_text': original_texts
@@ -77,7 +76,7 @@ def extract_query_text(text_payload: str) -> str:
     Returns:
         str: The extracted query text, or empty string if not found
     """
-    if pd.isna(text_payload):
+    if text_payload is None:
         return ""
 
     # Find the pattern "> neo4j - " and extract everything after it
@@ -89,37 +88,53 @@ def extract_query_text(text_payload: str) -> str:
         return match.group(1).strip()
     return ""
 
-def find_all_matching_queries(df1: pd.DataFrame, df2: pd.DataFrame,
-                         time_threshold_ms: int = 10000) -> pd.DataFrame:
+def find_all_matching_queries(df1: pl.DataFrame, df2: pl.DataFrame,
+                         time_threshold_ms: int = 10000) -> pl.DataFrame:
     """
     Find all queries that appear in both datasets within a time window (not just regressions).
 
     Args:
-        df1 (pd.DataFrame): DataFrame for version 1 logs
-        df2 (pd.DataFrame): DataFrame for version 2 logs
+        df1 (pl.DataFrame): DataFrame for version 1 logs
+        df2 (pl.DataFrame): DataFrame for version 2 logs
         time_threshold_ms (int): Time window in milliseconds for matching queries
 
     Returns:
-        pd.DataFrame: DataFrame with all matched queries and their performance comparison
+        pl.DataFrame: DataFrame with all matched queries and their performance comparison
     """
     # Filter valid entries
-    df1_valid = df1.dropna(subset=['timestamp', 'milliseconds', 'original_text']).copy()
-    df2_valid = df2.dropna(subset=['timestamp', 'milliseconds', 'original_text']).copy()
+    df1_valid = df1.filter(
+        pl.col('timestamp').is_not_null() &
+        pl.col('milliseconds').is_not_null() &
+        pl.col('original_text').is_not_null()
+    ).clone()
+    df2_valid = df2.filter(
+        pl.col('timestamp').is_not_null() &
+        pl.col('milliseconds').is_not_null() &
+        pl.col('original_text').is_not_null()
+    ).clone()
 
     # Extract query text for both datasets
-    df1_valid['query_text'] = df1_valid['original_text'].apply(extract_query_text)
-    df2_valid['query_text'] = df2_valid['original_text'].apply(extract_query_text)
+    df1_valid = df1_valid.with_columns(
+        pl.col('original_text').map_elements(extract_query_text, return_dtype=pl.String).alias('query_text')
+    )
+    df2_valid = df2_valid.with_columns(
+        pl.col('original_text').map_elements(extract_query_text, return_dtype=pl.String).alias('query_text')
+    )
 
     # Remove entries with empty query text
-    df1_valid = df1_valid[df1_valid['query_text'] != ""]
-    df2_valid = df2_valid[df2_valid['query_text'] != ""]
+    df1_valid = df1_valid.filter(pl.col('query_text') != "")
+    df2_valid = df2_valid.filter(pl.col('query_text') != "")
 
     matched_queries = []
     used_df2_indices = set()  # Track which df2 entries we've already matched
 
     print(f"Searching for matches in {len(df1_valid)} df1 entries and {len(df2_valid)} df2 entries...")
 
-    for idx1, row1 in df1_valid.iterrows():
+    # Convert to row dictionaries for iteration
+    df1_rows = df1_valid.to_dicts()
+    df2_rows = df2_valid.to_dicts()
+
+    for row1 in df1_rows:
         query1 = row1['query_text']
         timestamp1 = row1['timestamp']
         ms1 = row1['milliseconds']
@@ -128,7 +143,7 @@ def find_all_matching_queries(df1: pd.DataFrame, df2: pd.DataFrame,
         best_time_diff = float('inf')
 
         # Find the best matching query in df2 (closest in time)
-        for idx2, row2 in df2_valid.iterrows():
+        for idx2, row2 in enumerate(df2_rows):
             if idx2 in used_df2_indices:
                 continue  # Skip already matched entries
 
@@ -163,14 +178,14 @@ def find_all_matching_queries(df1: pd.DataFrame, df2: pd.DataFrame,
             matched_queries.append(best_match)
 
     print(f"Found {len(matched_queries)} unique matching queries")
-    return pd.DataFrame(matched_queries)
+    return pl.DataFrame(matched_queries)
 
-def get_matching_query_stats(matched_df: pd.DataFrame, version_col: str) -> dict:
+def get_matching_query_stats(matched_df: pl.DataFrame, version_col: str) -> dict:
     """
     Get performance statistics for matching queries from a specific version column.
 
     Args:
-        matched_df (pd.DataFrame): DataFrame with matched queries
+        matched_df (pl.DataFrame): DataFrame with matched queries
         version_col (str): Column name for the version to analyze ('ms_1_0_6' or 'ms_1_1_0')
 
     Returns:
@@ -179,25 +194,25 @@ def get_matching_query_stats(matched_df: pd.DataFrame, version_col: str) -> dict
     if len(matched_df) == 0:
         return {"error": "No matched queries found"}
 
-    values = matched_df[version_col]
+    values = matched_df.select(pl.col(version_col))
 
     stats = {
         "total_matching_queries": len(matched_df),
-        "avg_ms": values.mean(),
-        "median_ms": values.median(),
-        "min_ms": values.min(),
-        "max_ms": values.max(),
-        "std_ms": values.std()
+        "avg_ms": values.select(pl.col(version_col).mean()).item(row=0, column=0),
+        "median_ms": values.select(pl.col(version_col).median()).item(row=0, column=0),
+        "min_ms": values.select(pl.col(version_col).min()).item(row=0, column=0),
+        "max_ms": values.select(pl.col(version_col).max()).item(row=0, column=0),
+        "std_ms": values.select(pl.col(version_col).std()).item(row=0, column=0)
     }
 
     return stats
 
-def analyze_query_regressions(matched_df: pd.DataFrame, version1: str = "Version 1", version2: str = "Version 2") -> dict:
+def analyze_query_regressions(matched_df: pl.DataFrame, version1: str = "Version 1", version2: str = "Version 2") -> dict:
     """
     Analyze the query performance regressions and return summary statistics.
 
     Args:
-        matched_df (pd.DataFrame): DataFrame with matched queries
+        matched_df (pl.DataFrame): DataFrame with matched queries
         version1 (str): Name of the first version
         version2 (str): Name of the second version
 
@@ -208,25 +223,24 @@ def analyze_query_regressions(matched_df: pd.DataFrame, version1: str = "Version
         return {"error": "No matched queries found"}
 
     # Filter out infinite values for meaningful statistics
-    valid_ratios = matched_df[
-        (matched_df['performance_ratio'].notna()) &
-        (matched_df['performance_ratio'] != float('inf')) &
-        (matched_df['performance_ratio'] != float('-inf'))
-    ]['performance_ratio']
+    valid_ratios_df = matched_df.filter(
+        pl.col('performance_ratio').is_not_null() &
+        pl.col('performance_ratio').is_finite()
+    )
 
     analysis = {
         "total_matched_queries": len(matched_df),
-        "avg_regression_ms": matched_df['performance_regression'].mean(),
-        "median_regression_ms": matched_df['performance_regression'].median(),
-        "max_regression_ms": matched_df['performance_regression'].max(),
-        "min_regression_ms": matched_df['performance_regression'].min(),
-        "avg_performance_ratio": valid_ratios.mean() if len(valid_ratios) > 0 else 0,
-        "median_performance_ratio": valid_ratios.median() if len(valid_ratios) > 0 else 0,
-        "max_performance_ratio": valid_ratios.max() if len(valid_ratios) > 0 else 0,
-        "worst_regression_query": matched_df.loc[matched_df['performance_regression'].idxmax(), 'query_text'][:100] + "..." if len(matched_df) > 0 else "",
-        "queries_with_2x_slowdown": len(matched_df[matched_df['performance_ratio'] >= 2.0]),
-        "queries_with_5x_slowdown": len(matched_df[matched_df['performance_ratio'] >= 5.0]),
-        "queries_with_10x_slowdown": len(matched_df[matched_df['performance_ratio'] >= 10.0])
+        "avg_regression_ms": matched_df.select(pl.col('performance_regression').mean()).item(row=0, column=0),
+        "median_regression_ms": matched_df.select(pl.col('performance_regression').median()).item(row=0, column=0),
+        "max_regression_ms": matched_df.select(pl.col('performance_regression').max()).item(row=0, column=0),
+        "min_regression_ms": matched_df.select(pl.col('performance_regression').min()).item(row=0, column=0),
+        "avg_performance_ratio": valid_ratios_df.select(pl.col('performance_ratio').mean()).item(row=0, column=0) if len(valid_ratios_df) > 0 else 0,
+        "median_performance_ratio": valid_ratios_df.select(pl.col('performance_ratio').median()).item(row=0, column=0) if len(valid_ratios_df) > 0 else 0,
+        "max_performance_ratio": valid_ratios_df.select(pl.col('performance_ratio').max()).item(row=0, column=0) if len(valid_ratios_df) > 0 else 0,
+        "worst_regression_query": matched_df.sort('performance_regression', descending=True).select(pl.col('query_text')).item(row=0, column=0)[:100] + "..." if len(matched_df) > 0 else "",
+        "queries_with_2x_slowdown": len(matched_df.filter(pl.col('performance_ratio') >= 2.0)),
+        "queries_with_5x_slowdown": len(matched_df.filter(pl.col('performance_ratio') >= 5.0)),
+        "queries_with_10x_slowdown": len(matched_df.filter(pl.col('performance_ratio') >= 10.0))
     }
 
     return analysis
@@ -254,20 +268,20 @@ if __name__ == "__main__":
         df2 = extract_timestamp_and_ms(args.logs2)
 
         print(f"Extracted {len(df1)} entries from {args.logs1}")
-        print(f"Valid entries with timestamp/ms: {df1.dropna(subset=['milliseconds']).shape[0]}")
+        print(f"Valid entries with timestamp/ms: {len(df1.filter(pl.col('milliseconds').is_not_null()))}")
 
         print(f"Extracted {len(df2)} entries from {args.logs2}")
-        print(f"Valid entries with timestamp/ms: {df2.dropna(subset=['milliseconds']).shape[0]}")
+        print(f"Valid entries with timestamp/ms: {len(df2.filter(pl.col('milliseconds').is_not_null()))}")
 
         # Filter out 0ms entries and report counts
-        df1_valid = df1.dropna(subset=['milliseconds'])
-        df2_valid = df2.dropna(subset=['milliseconds'])
+        df1_valid = df1.filter(pl.col('milliseconds').is_not_null())
+        df2_valid = df2.filter(pl.col('milliseconds').is_not_null())
 
-        df1_zero_count = len(df1_valid[df1_valid['milliseconds'] == 0])
-        df2_zero_count = len(df2_valid[df2_valid['milliseconds'] == 0])
+        df1_zero_count = len(df1_valid.filter(pl.col('milliseconds') == 0))
+        df2_zero_count = len(df2_valid.filter(pl.col('milliseconds') == 0))
 
-        df1_filtered = df1_valid[df1_valid['milliseconds'] > 0]
-        df2_filtered = df2_valid[df2_valid['milliseconds'] > 0]
+        df1_filtered = df1_valid.filter(pl.col('milliseconds') > 0)
+        df2_filtered = df2_valid.filter(pl.col('milliseconds') > 0)
 
         print(f"\nFiltered out {df1_zero_count} entries with 0ms from {args.version1}")
         print(f"Remaining entries for {args.version1}: {len(df1_filtered)}")
@@ -279,7 +293,7 @@ if __name__ == "__main__":
         all_matched_queries = find_all_matching_queries(df1_filtered, df2_filtered, time_threshold_ms=10000)
 
         if len(all_matched_queries) > 0:
-            same_time_queries = all_matched_queries[all_matched_queries['ms_1_0_6'] == all_matched_queries['ms_1_1_0']]
+            same_time_queries = all_matched_queries.filter(pl.col('ms_1_0_6') == pl.col('ms_1_1_0'))
             print(f"Queries with exact same timing: {len(same_time_queries)}")
 
             print(f"Found {len(all_matched_queries)} total matching queries between {args.version1} and {args.version2}")
@@ -296,27 +310,27 @@ if __name__ == "__main__":
 
             # Analyze performance regressions in both directions
             print("\nAnalyzing performance changes in both directions...")
-            regressions_v2_slower = all_matched_queries[all_matched_queries['ms_1_1_0'] > all_matched_queries['ms_1_0_6']]
-            regressions_v1_slower = all_matched_queries[all_matched_queries['ms_1_0_6'] > all_matched_queries['ms_1_1_0']]
+            regressions_v2_slower = all_matched_queries.filter(pl.col('ms_1_1_0') > pl.col('ms_1_0_6'))
+            regressions_v1_slower = all_matched_queries.filter(pl.col('ms_1_0_6') > pl.col('ms_1_1_0'))
 
             print(f"\nQueries where {args.version2} is slower than {args.version1}: {len(regressions_v2_slower)}")
             if len(regressions_v2_slower) > 0:
                 regression_analysis_v2 = analyze_query_regressions(regressions_v2_slower, args.version1, args.version2)
                 print(f"\n{args.version2} Regression Analysis:")
                 printItems(regression_analysis_v2)
-                print(f"\nGenerating regression analysis graphs for {args.version2} slower cases...")
-                plot_matching_queries(regressions_v2_slower, args.version1, args.version2)
 
             print(f"\nQueries where {args.version1} is slower than {args.version2}: {len(regressions_v1_slower)}")
             if len(regressions_v1_slower) > 0:
-                regressions_v1_slower_swapped = regressions_v1_slower.copy()
-                regressions_v1_slower_swapped['performance_regression'] = regressions_v1_slower_swapped['ms_1_0_6'] - regressions_v1_slower_swapped['ms_1_1_0']
-                regressions_v1_slower_swapped['performance_ratio'] = regressions_v1_slower_swapped['ms_1_0_6'] / regressions_v1_slower_swapped['ms_1_1_0']
-
+                regressions_v1_slower_swapped = regressions_v1_slower.with_columns([
+                    (pl.col('ms_1_0_6') - pl.col('ms_1_1_0')).alias('performance_regression'),
+                    (pl.col('ms_1_0_6') / pl.col('ms_1_1_0')).alias('performance_ratio')
+                ])
                 regression_analysis_v1 = analyze_query_regressions(regressions_v1_slower_swapped, args.version2, args.version1)
                 print(f"\n{args.version1} Regression Analysis:")
                 printItems(regression_analysis_v1)
-                plot_matching_queries(regressions_v1_slower_swapped, args.version2, args.version1)
+
+            print(f"\nGenerating regression analysis graphs for {args.version2} slower cases...")
+            plot_matching_queries(all_matched_queries, args.version1, args.version2)
 
         else:
             print("No matching queries found between the two datasets.")

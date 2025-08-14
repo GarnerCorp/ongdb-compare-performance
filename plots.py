@@ -1,13 +1,10 @@
-from matplotlib.pylab import rint
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from matplotlib.figure import Figure
-import pandas as pd
+import polars as pl
 
-def plot_matching_queries(matched_df: pd.DataFrame, version1: str = "Version-1", version2: str = "Version-2") -> None:
+def plot_matching_queries(matched_df: pl.DataFrame, version1: str = "Version-1", version2: str = "Version-2") -> None:
     """
     Args:
-        matched_df (pd.DataFrame): DataFrame with matched queries
+        matched_df (pl.DataFrame): DataFrame with matched queries
         version1 (str): Name of the first version
         version2 (str): Name of the second version
     """
@@ -16,11 +13,10 @@ def plot_matching_queries(matched_df: pd.DataFrame, version1: str = "Version-1",
         return
 
     # Filter out any infinite or NaN values that might cause plotting issues
-    plot_df = matched_df[
-        (matched_df['performance_ratio'].notna()) &
-        (matched_df['performance_ratio'] != float('inf')) &
-        (matched_df['performance_ratio'] != float('-inf'))
-    ].copy()
+    plot_df = matched_df.filter(
+        pl.col('performance_ratio').is_not_null() &
+        pl.col('performance_ratio').is_finite()
+    )
 
     if len(plot_df) == 0:
         print("No valid data for plotting after filtering infinite values.")
@@ -36,42 +32,32 @@ def plot_matching_queries(matched_df: pd.DataFrame, version1: str = "Version-1",
     col1 = f'ms_{version1_col}'
     col2 = f'ms_{version2_col}'
 
-    # Plot 1: Scatter plot comparing versions performance
-    fig1, ax1 = plt.subplots(figsize=(10, 8))
-    ax1.scatter(plot_df[col1], plot_df[col2],
+    # Create single scatter plot with log scales
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    # Convert to numpy arrays for matplotlib
+    col1_values = plot_df.select(pl.col(col1)).to_numpy().flatten()
+    col2_values = plot_df.select(pl.col(col2)).to_numpy().flatten()
+
+    ax.scatter(col1_values, col2_values,
                alpha=0.7, s=10, color='red')
 
-    # Add diagonal line (y=x) for reference
-    min_ms = min(plot_df[col1].min(), plot_df[col2].min())
-    max_ms = max(plot_df[col1].max(), plot_df[col2].max())
-    ax1.plot([min_ms, max_ms], [min_ms, max_ms], 'k--', alpha=0.5, label='Equal Performance')
+    # Set log base 2 scale on both axes
+    ax.set_xscale('log', base=2)
+    ax.set_yscale('log', base=2)
 
-    ax1.set_xlabel(f'{version1} Query Time (ms)')
-    ax1.set_ylabel(f'{version2} Query Time (ms)')
-    ax1.set_title(f'Query Performance Comparison: {version1} vs {version2}')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
+    # Add diagonal line (y=x) for reference
+    min_ms = min(col1_values.min(), col2_values.min())
+    max_ms = max(col1_values.max(), col2_values.max())
+    ax.plot([min_ms, max_ms], [min_ms, max_ms], 'k--', alpha=0.5, label='Equal Performance')
+
+    ax.set_xlabel(f'{version1} Query Time (ms) [log₂ scale]')
+    ax.set_ylabel(f'{version2} Query Time (ms) [log₂ scale]')
+    ax.set_title(f'Query Performance Comparison: {version1} vs {version2}')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(f'plots/query_performance_comparison-{version1}.png', dpi=300, bbox_inches='tight')
     print(f"Query performance comparison saved as 'plots/query_performance_comparison-{version1}.png'")
-    plt.close(fig1)
-
-    # Plot 2: Performance ratio distribution (cap extreme values for better visualization)
-    fig2, ax2 = plt.subplots(figsize=(10, 6))
-    ratio_data = plot_df['performance_ratio']
-    # Cap ratios at 97th percentile for better visualization
-    ratio_cap = ratio_data.quantile(0.97)
-    ratio_capped = ratio_data.clip(upper=ratio_cap)
-
-    ax2.hist(ratio_capped, bins=30, alpha=0.7,
-             color='purple', edgecolor='black')
-    ax2.set_xlabel(f'Performance Ratio ({version2} / {version1}) [capped at {ratio_cap:.1f}x/97th percentile]')
-    ax2.set_ylabel('Frequency')
-    ax2.set_title(f'Distribution of Performance Ratios: {version1} vs {version2}')
-    ax2.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(f'plots/performance_ratio_distribution-{version1}.png', dpi=300, bbox_inches='tight')
-    print(f"Performance ratio distribution saved as 'plots/performance_ratio_distribution-{version1}.png'")
-    plt.close(fig2)
+    plt.close(fig)
