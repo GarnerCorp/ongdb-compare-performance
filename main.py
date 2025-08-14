@@ -25,7 +25,7 @@ def extract_timestamp_and_ms(csv_file_path: str) -> pl.DataFrame:
     milliseconds = []
     original_texts = []
 
-    # Regular expression pattern to match timestamp and milliseconds
+    # Regular expression pattern to match timestamp and elapsed milliseconds
     # Pattern: '2025-08-13 11:59:58.946+0000 INFO  0 ms:
     pattern = r"'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\+\d{4}) INFO\s+(\d+) ms:"
 
@@ -161,10 +161,10 @@ def find_all_matching_queries(df1: pl.DataFrame, df2: pl.DataFrame,
                         best_match = {
                             'idx2': idx2,
                             'query_text': query1,
-                            'timestamp_1_0_6': timestamp1,
-                            'timestamp_1_1_0': timestamp2,
-                            'ms_1_0_6': ms1,
-                            'ms_1_1_0': ms2,
+                            'timestamp_1': timestamp1,
+                            'timestamp_2': timestamp2,
+                            'ms_1': ms1,
+                            'ms_2': ms2,
                             'time_diff_ms': time_diff,
                             'performance_regression': ms2 - ms1,
                             'performance_ratio': ms2 / ms1 if ms1 > 0 else float('inf')
@@ -186,7 +186,7 @@ def get_matching_query_stats(matched_df: pl.DataFrame, version_col: str) -> dict
 
     Args:
         matched_df (pl.DataFrame): DataFrame with matched queries
-        version_col (str): Column name for the version to analyze ('ms_1_0_6' or 'ms_1_1_0')
+        version_col (str): Column name for the version to analyze ('ms_1' or 'ms_2')
 
     Returns:
         dict: Dictionary with performance statistics
@@ -293,14 +293,14 @@ if __name__ == "__main__":
         all_matched_queries = find_all_matching_queries(df1_filtered, df2_filtered, time_threshold_ms=10000)
 
         if len(all_matched_queries) > 0:
-            same_time_queries = all_matched_queries.filter(pl.col('ms_1_0_6') == pl.col('ms_1_1_0'))
+            same_time_queries = all_matched_queries.filter(pl.col('ms_1') == pl.col('ms_2'))
             print(f"Queries with exact same timing: {len(same_time_queries)}")
 
             print(f"Found {len(all_matched_queries)} total matching queries between {args.version1} and {args.version2}")
 
             # Get performance stats for just the matching queries
-            matching_stats1 = get_matching_query_stats(all_matched_queries, version_col='ms_1_0_6')
-            matching_stats2 = get_matching_query_stats(all_matched_queries, version_col='ms_1_1_0')
+            matching_stats1 = get_matching_query_stats(all_matched_queries, version_col='ms_1')
+            matching_stats2 = get_matching_query_stats(all_matched_queries, version_col='ms_2')
 
             print(f"\n{args.version1} Performance Stats (Matching Queries Only):")
             printItems(matching_stats1)
@@ -310,8 +310,8 @@ if __name__ == "__main__":
 
             # Analyze performance regressions in both directions
             print("\nAnalyzing performance changes in both directions...")
-            regressions_v2_slower = all_matched_queries.filter(pl.col('ms_1_1_0') > pl.col('ms_1_0_6'))
-            regressions_v1_slower = all_matched_queries.filter(pl.col('ms_1_0_6') > pl.col('ms_1_1_0'))
+            regressions_v2_slower = all_matched_queries.filter(pl.col('ms_2') > pl.col('ms_1'))
+            regressions_v1_slower = all_matched_queries.filter(pl.col('ms_1') > pl.col('ms_2'))
 
             print(f"\nQueries where {args.version2} is slower than {args.version1}: {len(regressions_v2_slower)}")
             if len(regressions_v2_slower) > 0:
@@ -323,8 +323,8 @@ if __name__ == "__main__":
             regressions_v1_slower_swapped = None
             if len(regressions_v1_slower) > 0:
                 regressions_v1_slower_swapped = regressions_v1_slower.with_columns([
-                    (pl.col('ms_1_0_6') - pl.col('ms_1_1_0')).alias('performance_regression'),
-                    (pl.col('ms_1_0_6') / pl.col('ms_1_1_0')).alias('performance_ratio')
+                    (pl.col('ms_1') - pl.col('ms_2')).alias('performance_regression'),
+                    (pl.col('ms_1') / pl.col('ms_2')).alias('performance_ratio')
                 ])
                 regression_analysis_v1 = analyze_query_regressions(regressions_v1_slower_swapped)
                 print(f"\n{args.version1} Regression Analysis:")
