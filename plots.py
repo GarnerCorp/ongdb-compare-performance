@@ -40,8 +40,35 @@ def plot_matching_queries(matched_df: pl.DataFrame, version1: str = "Version-1",
     col1_values = plot_df.select(pl.col(col1)).to_numpy().flatten()
     col2_values = plot_df.select(pl.col(col2)).to_numpy().flatten()
 
-    ax.scatter(col1_values, col2_values,
-               alpha=0.7, s=10, color='red')
+    # Determine colors based on which version regressed
+    # Blue: version1 is slower (col1 > col2, points below diagonal)
+    # Red: version2 is slower (col2 > col1, points above diagonal)
+    # Green: equal performance (col1 == col2, points on diagonal)
+    colors = []
+    for i in range(len(col1_values)):
+        if col1_values[i] > col2_values[i]:
+            colors.append('blue')  # Version 1 regressed
+        elif col2_values[i] > col1_values[i]:
+            colors.append('red')   # Version 2 regressed
+        else:
+            colors.append('green') # Equal performance
+
+    # Create scatter plots with different colors
+    v1_regression_mask = np.array(colors) == 'blue'
+    v2_regression_mask = np.array(colors) == 'red'
+    equal_performance_mask = np.array(colors) == 'green'
+
+    if np.any(v1_regression_mask):
+        ax.scatter(col1_values[v1_regression_mask], col2_values[v1_regression_mask],
+                   alpha=0.7, s=5, color='blue', label=f'{version1} Regressions')
+
+    if np.any(v2_regression_mask):
+        ax.scatter(col1_values[v2_regression_mask], col2_values[v2_regression_mask],
+                   alpha=0.7, s=5, color='red', label=f'{version2} Regressions')
+
+    if np.any(equal_performance_mask):
+        ax.scatter(col1_values[equal_performance_mask], col2_values[equal_performance_mask],
+                   alpha=0.7, s=5, color='green', label='Equal Performance')
 
     # Set log base 2 scale on both axes
     ax.set_xscale('log', base=2)
@@ -50,7 +77,7 @@ def plot_matching_queries(matched_df: pl.DataFrame, version1: str = "Version-1",
     # Add diagonal line (y=x) for reference
     min_ms = min(col1_values.min(), col2_values.min())
     max_ms = max(col1_values.max(), col2_values.max())
-    ax.plot([min_ms, max_ms], [min_ms, max_ms], 'k--', alpha=0.5, label='Equal Performance')
+    ax.plot([min_ms, max_ms], [min_ms, max_ms], 'k--', alpha=0.5, linewidth=0.8, label='Equivalent Performance')
 
     ax.set_xlabel(f'{version1} Query Time (ms) [log₂ scale]')
     ax.set_ylabel(f'{version2} Query Time (ms) [log₂ scale]')
