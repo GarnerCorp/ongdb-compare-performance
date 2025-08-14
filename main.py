@@ -1,7 +1,10 @@
 import pandas as pd
 import re
+import argparse
 from datetime import datetime
 from typing import Optional, Tuple
+from plots import  plot_matching_queries
+import os
 
 
 def extract_timestamp_and_ms(csv_file_path: str) -> pd.DataFrame:
@@ -14,14 +17,11 @@ def extract_timestamp_and_ms(csv_file_path: str) -> pd.DataFrame:
     Returns:
         pd.DataFrame: DataFrame with columns 'timestamp', 'milliseconds', and 'original_text'
     """
-    # Read the CSV file
     df = pd.read_csv(csv_file_path)
 
-    # Check if textPayload column exists
     if 'textPayload' not in df.columns:
         raise ValueError("textPayload column not found in CSV file")
 
-    # Initialize lists to store extracted data
     timestamps = []
     milliseconds = []
     original_texts = []
@@ -37,16 +37,13 @@ def extract_timestamp_and_ms(csv_file_path: str) -> pd.DataFrame:
             original_texts.append(None)
             continue
 
-        # Extract timestamp and milliseconds using regex
         match = re.search(pattern, str(text_payload))
 
         if match:
             timestamp_str = match.group(1)
             ms_value = int(match.group(2))
 
-            # Parse timestamp to datetime object
             try:
-                # Remove timezone offset for parsing
                 timestamp_clean = timestamp_str.replace('+0000', '')
                 timestamp_dt = datetime.strptime(timestamp_clean, '%Y-%m-%d %H:%M:%S.%f')
                 timestamps.append(timestamp_dt)
@@ -58,12 +55,10 @@ def extract_timestamp_and_ms(csv_file_path: str) -> pd.DataFrame:
                 milliseconds.append(None)
                 original_texts.append(text_payload)
         else:
-            # No match found
             timestamps.append(None)
             milliseconds.append(None)
             original_texts.append(text_payload)
 
-    # Create result DataFrame
     result_df = pd.DataFrame({
         'timestamp': timestamps,
         'milliseconds': milliseconds,
@@ -71,49 +66,6 @@ def extract_timestamp_and_ms(csv_file_path: str) -> pd.DataFrame:
     })
 
     return result_df
-
-def parse_log_files_comparison(file1_path: str, file2_path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Parse two log CSV files and return DataFrames with extracted timestamp and milliseconds.
-
-    Args:
-        file1_path (str): Path to first CSV file
-        file2_path (str): Path to second CSV file
-
-    Returns:
-        Tuple[pd.DataFrame, pd.DataFrame]: Tuple of DataFrames for file1 and file2
-    """
-    df1 = extract_timestamp_and_ms(file1_path)
-    df2 = extract_timestamp_and_ms(file2_path)
-
-    return df1, df2
-
-def get_performance_stats(df: pd.DataFrame) -> dict:
-    """
-    Get basic performance statistics from the extracted data.
-
-    Args:
-        df (pd.DataFrame): DataFrame with timestamp and milliseconds columns
-
-    Returns:
-        dict: Dictionary with performance statistics
-    """
-    valid_rows = df.dropna(subset=['milliseconds'])
-
-    if len(valid_rows) == 0:
-        return {"error": "No valid millisecond data found"}
-
-    stats = {
-        "total_entries": len(df),
-        "valid_entries": len(valid_rows),
-        "avg_ms": valid_rows['milliseconds'].mean(),
-        "median_ms": valid_rows['milliseconds'].median(),
-        "min_ms": valid_rows['milliseconds'].min(),
-        "max_ms": valid_rows['milliseconds'].max(),
-        "std_ms": valid_rows['milliseconds'].std()
-    }
-
-    return stats
 
 def extract_query_text(text_payload: str) -> str:
     """
@@ -137,19 +89,18 @@ def extract_query_text(text_payload: str) -> str:
         return match.group(1).strip()
     return ""
 
-def find_matching_queries(df1: pd.DataFrame, df2: pd.DataFrame,
-                         time_threshold_ms: int = 500) -> pd.DataFrame:
+def find_all_matching_queries(df1: pd.DataFrame, df2: pd.DataFrame,
+                         time_threshold_ms: int = 10000) -> pd.DataFrame:
     """
-    Find queries that appear in both datasets within a time window and where
-    1.1.0 query time is greater than 1.0.6 query time.
+    Find all queries that appear in both datasets within a time window (not just regressions).
 
     Args:
-        df1 (pd.DataFrame): DataFrame for 1.0.6 logs
-        df2 (pd.DataFrame): DataFrame for 1.1.0 logs
+        df1 (pd.DataFrame): DataFrame for version 1 logs
+        df2 (pd.DataFrame): DataFrame for version 2 logs
         time_threshold_ms (int): Time window in milliseconds for matching queries
 
     Returns:
-        pd.DataFrame: DataFrame with matched queries and their performance comparison
+        pd.DataFrame: DataFrame with all matched queries and their performance comparison
     """
     # Filter valid entries
     df1_valid = df1.dropna(subset=['timestamp', 'milliseconds', 'original_text']).copy()
@@ -159,9 +110,9 @@ def find_matching_queries(df1: pd.DataFrame, df2: pd.DataFrame,
     df1_valid['query_text'] = df1_valid['original_text'].apply(extract_query_text)
     df2_valid['query_text'] = df2_valid['original_text'].apply(extract_query_text)
 
-    # Remove entries with empty query text or zero milliseconds (to avoid inf ratios)
-    df1_valid = df1_valid[(df1_valid['query_text'] != "") & (df1_valid['milliseconds'] > 0)]
-    df2_valid = df2_valid[(df2_valid['query_text'] != "") & (df2_valid['milliseconds'] > 0)]
+    # Remove entries with empty query text
+    df1_valid = df1_valid[df1_valid['query_text'] != ""]
+    df2_valid = df2_valid[df2_valid['query_text'] != ""]
 
     matched_queries = []
     used_df2_indices = set()  # Track which df2 entries we've already matched
@@ -189,8 +140,8 @@ def find_matching_queries(df1: pd.DataFrame, df2: pd.DataFrame,
             if query1 == query2:
                 time_diff = abs((timestamp2 - timestamp1).total_seconds() * 1000)
 
-                # Only consider if within time threshold and 1.1.0 is slower
-                if time_diff <= time_threshold_ms and ms2 > ms1:
+                # Consider all matches within time threshold (not just regressions)
+                if time_diff <= time_threshold_ms:
                     if time_diff < best_time_diff:
                         best_match = {
                             'idx2': idx2,
@@ -201,7 +152,7 @@ def find_matching_queries(df1: pd.DataFrame, df2: pd.DataFrame,
                             'ms_1_1_0': ms2,
                             'time_diff_ms': time_diff,
                             'performance_regression': ms2 - ms1,
-                            'performance_ratio': ms2 / ms1
+                            'performance_ratio': ms2 / ms1 if ms1 > 0 else float('inf')
                         }
                         best_time_diff = time_diff
 
@@ -211,15 +162,44 @@ def find_matching_queries(df1: pd.DataFrame, df2: pd.DataFrame,
             del best_match['idx2']  # Remove internal tracking field
             matched_queries.append(best_match)
 
-    print(f"Found {len(matched_queries)} unique matching queries with performance regressions")
+    print(f"Found {len(matched_queries)} unique matching queries")
     return pd.DataFrame(matched_queries)
 
-def analyze_query_regressions(matched_df: pd.DataFrame) -> dict:
+def get_matching_query_stats(matched_df: pd.DataFrame, version_col: str) -> dict:
+    """
+    Get performance statistics for matching queries from a specific version column.
+
+    Args:
+        matched_df (pd.DataFrame): DataFrame with matched queries
+        version_col (str): Column name for the version to analyze ('ms_1_0_6' or 'ms_1_1_0')
+
+    Returns:
+        dict: Dictionary with performance statistics
+    """
+    if len(matched_df) == 0:
+        return {"error": "No matched queries found"}
+
+    values = matched_df[version_col]
+
+    stats = {
+        "total_matching_queries": len(matched_df),
+        "avg_ms": values.mean(),
+        "median_ms": values.median(),
+        "min_ms": values.min(),
+        "max_ms": values.max(),
+        "std_ms": values.std()
+    }
+
+    return stats
+
+def analyze_query_regressions(matched_df: pd.DataFrame, version1: str = "Version 1", version2: str = "Version 2") -> dict:
     """
     Analyze the query performance regressions and return summary statistics.
 
     Args:
         matched_df (pd.DataFrame): DataFrame with matched queries
+        version1 (str): Name of the first version
+        version2 (str): Name of the second version
 
     Returns:
         dict: Dictionary with regression analysis statistics
@@ -243,7 +223,7 @@ def analyze_query_regressions(matched_df: pd.DataFrame) -> dict:
         "avg_performance_ratio": valid_ratios.mean() if len(valid_ratios) > 0 else 0,
         "median_performance_ratio": valid_ratios.median() if len(valid_ratios) > 0 else 0,
         "max_performance_ratio": valid_ratios.max() if len(valid_ratios) > 0 else 0,
-        "worst_regression_query": matched_df.loc[matched_df['performance_regression'].idxmax(), 'query_text'][:100] + "...",
+        "worst_regression_query": matched_df.loc[matched_df['performance_regression'].idxmax(), 'query_text'][:100] + "..." if len(matched_df) > 0 else "",
         "queries_with_2x_slowdown": len(matched_df[matched_df['performance_ratio'] >= 2.0]),
         "queries_with_5x_slowdown": len(matched_df[matched_df['performance_ratio'] >= 5.0]),
         "queries_with_10x_slowdown": len(matched_df[matched_df['performance_ratio'] >= 10.0])
@@ -251,230 +231,97 @@ def analyze_query_regressions(matched_df: pd.DataFrame) -> dict:
 
     return analysis
 
-def create_timing_graphs(df1: pd.DataFrame, df2: pd.DataFrame,
-                        file1_name: str = "1.0.6", file2_name: str = "1.1.0",
-                        save_plots: bool = True) -> None:
-    """
-    Create graphs comparing timing data from two DataFrames.
+def printItems(items: dict):
+    for key, value in items.items():
+        if isinstance(value, float):
+            print(f"  {key}: {value:.2f}")
+        else:
+            print(f"  {key}: {value}")
 
-    Args:
-        df1 (pd.DataFrame): First DataFrame with timestamp and milliseconds
-        df2 (pd.DataFrame): Second DataFrame with timestamp and milliseconds
-        file1_name (str): Name for first dataset (default: "1.0.6")
-        file2_name (str): Name for second dataset (default: "1.1.0")
-        save_plots (bool): Whether to save plots to files (default: True)
-    """
-    # Filter out rows with missing data
-    df1_valid = df1.dropna(subset=['timestamp', 'milliseconds'])
-    df2_valid = df2.dropna(subset=['timestamp', 'milliseconds'])
-
-    # Create figure with subplots
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
-    fig.suptitle('Log Performance Comparison', fontsize=16, fontweight='bold')
-
-    # Plot 1: Time series for both datasets
-    if len(df1_valid) > 0:
-        ax1.scatter(df1_valid['timestamp'], df1_valid['milliseconds'],
-                   alpha=0.6, s=20, color='blue', label=file1_name)
-    if len(df2_valid) > 0:
-        ax1.scatter(df2_valid['timestamp'], df2_valid['milliseconds'],
-                   alpha=0.6, s=20, color='red', label=file2_name)
-
-    ax1.set_xlabel('Timestamp')
-    ax1.set_ylabel('Milliseconds')
-    ax1.set_title('Query Performance Over Time')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-
-    # Format x-axis for better readability
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-    ax1.xaxis.set_major_locator(mdates.MinuteLocator(interval=5))
-    plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
-
-    # Plot 2: Histogram comparison
-    if len(df1_valid) > 0:
-        ax2.hist(df1_valid['milliseconds'], bins=200, alpha=0.7,
-                color='blue', label=file1_name, density=True)
-    if len(df2_valid) > 0:
-        ax2.hist(df2_valid['milliseconds'], bins=200, alpha=0.7,
-                color='red', label=file2_name, density=True)
-
-    ax2.set_xlabel('Milliseconds')
-    ax2.set_ylabel('Density')
-    ax2.set_title('Distribution of Query Times')
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-
-    # Plot 3: Individual time series for file 1
-    if len(df1_valid) > 0:
-        ax3.plot(df1_valid['timestamp'], df1_valid['milliseconds'],
-                'o-', alpha=0.7, color='blue', markersize=3, linewidth=1)
-        ax3.set_xlabel('Timestamp')
-        ax3.set_ylabel('Milliseconds')
-        ax3.set_title(f'{file1_name} Query Performance')
-        ax3.grid(True, alpha=0.3)
-        ax3.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-        ax3.xaxis.set_major_locator(mdates.MinuteLocator(interval=5))
-        plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45)
-
-    # Plot 4: Individual time series for file 2
-    if len(df2_valid) > 0:
-        ax4.plot(df2_valid['timestamp'], df2_valid['milliseconds'],
-                'o-', alpha=0.7, color='red', markersize=3, linewidth=1)
-        ax4.set_xlabel('Timestamp')
-        ax4.set_ylabel('Milliseconds')
-        ax4.set_title(f'{file2_name} Query Performance')
-        ax4.grid(True, alpha=0.3)
-        ax4.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-        ax4.xaxis.set_major_locator(mdates.MinuteLocator(interval=5))
-        plt.setp(ax4.xaxis.get_majorticklabels(), rotation=45)
-
-    plt.tight_layout()
-
-    if save_plots:
-        plt.savefig('log_performance_comparison.png', dpi=300, bbox_inches='tight')
-        print("Graph saved as 'log_performance_comparison.png'")
-
-    plt.show()
-
-def create_summary_stats_plot(stats1: dict, stats2: dict,
-                             file1_name: str = "1.0.6", file2_name: str = "1.1.0",
-                             save_plot: bool = True) -> None:
-    """
-    Create a bar chart comparing summary statistics between two datasets.
-
-    Args:
-        stats1 (dict): Statistics dictionary for first dataset
-        stats2 (dict): Statistics dictionary for second dataset
-        file1_name (str): Name for first dataset
-        file2_name (str): Name for second dataset
-        save_plot (bool): Whether to save plot to file
-    """
-    # Extract metrics for comparison
-    metrics = ['avg_ms', 'median_ms', 'min_ms', 'max_ms', 'std_ms']
-    values1 = [stats1.get(metric, 0) for metric in metrics]
-    values2 = [stats2.get(metric, 0) for metric in metrics]
-
-    # Create bar chart
-    fig, ax = plt.subplots(figsize=(12, 6))
-
-    x = range(len(metrics))
-    width = 0.35
-
-    bars1 = ax.bar([i - width/2 for i in x], values1, width,
-                   label=file1_name, color='blue', alpha=0.7)
-    bars2 = ax.bar([i + width/2 for i in x], values2, width,
-                   label=file2_name, color='red', alpha=0.7)
-
-    ax.set_xlabel('Metrics')
-    ax.set_ylabel('Milliseconds')
-    ax.set_title('Performance Metrics Comparison')
-    ax.set_xticks(x)
-    ax.set_xticklabels(['Average', 'Median', 'Minimum', 'Maximum', 'Std Dev'])
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis='y')
-
-    # Add value labels on bars
-    def add_value_labels(bars):
-        for bar in bars:
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
-                   f'{height:.1f}', ha='center', va='bottom', fontsize=9)
-
-    add_value_labels(bars1)
-    add_value_labels(bars2)
-
-    plt.tight_layout()
-
-    if save_plot:
-        plt.savefig('performance_metrics_comparison.png', dpi=300, bbox_inches='tight')
-        print("Statistics graph saved as 'performance_metrics_comparison.png'")
-
-    plt.show()
-
-# Example usage
 if __name__ == "__main__":
-    # Example of how to use the function
+    parser = argparse.ArgumentParser(description='Compare database log performance between two versions')
+    parser.add_argument('version1', help='Database version 1 (e.g., "1.0.6")')
+    parser.add_argument('logs1', help='Path to log file 1')
+    parser.add_argument('version2', help='Database version 2 (e.g., "1.1.0")')
+    parser.add_argument('logs2', help='Path to log file 2')
+
+    args = parser.parse_args()
+    os.makedirs('plots', exist_ok=True)
+
+
     try:
-        print("Extracting data from CSV files...")
+        df1 = extract_timestamp_and_ms(args.logs1)
+        df2 = extract_timestamp_and_ms(args.logs2)
 
-        # Extract data from both files
-        df1 = extract_timestamp_and_ms("1.0.6-logs.csv")
-        df2 = extract_timestamp_and_ms("1.1.0-logs.csv")
-
-        print(f"Extracted {len(df1)} entries from 1.0.6-logs.csv")
+        print(f"Extracted {len(df1)} entries from {args.logs1}")
         print(f"Valid entries with timestamp/ms: {df1.dropna(subset=['milliseconds']).shape[0]}")
 
-        print(f"Extracted {len(df2)} entries from 1.1.0-logs.csv")
+        print(f"Extracted {len(df2)} entries from {args.logs2}")
         print(f"Valid entries with timestamp/ms: {df2.dropna(subset=['milliseconds']).shape[0]}")
 
-        # Get performance stats
-        stats1 = get_performance_stats(df1)
-        stats2 = get_performance_stats(df2)
+        # Filter out 0ms entries and report counts
+        df1_valid = df1.dropna(subset=['milliseconds'])
+        df2_valid = df2.dropna(subset=['milliseconds'])
 
-        print("\n1.0.6 Performance Stats:")
-        for key, value in stats1.items():
-            if isinstance(value, float):
-                print(f"  {key}: {value:.2f}")
-            else:
-                print(f"  {key}: {value}")
+        df1_zero_count = len(df1_valid[df1_valid['milliseconds'] == 0])
+        df2_zero_count = len(df2_valid[df2_valid['milliseconds'] == 0])
 
-        print("\n1.1.0 Performance Stats:")
-        for key, value in stats2.items():
-            if isinstance(value, float):
-                print(f"  {key}: {value:.2f}")
-            else:
-                print(f"  {key}: {value}")
+        df1_filtered = df1_valid[df1_valid['milliseconds'] > 0]
+        df2_filtered = df2_valid[df2_valid['milliseconds'] > 0]
 
-        # Show sample of extracted data
-        print("\nSample extracted data from 1.0.6:")
-        sample_df1 = df1[['timestamp', 'milliseconds']].dropna().head()
-        print(sample_df1)
+        print(f"\nFiltered out {df1_zero_count} entries with 0ms from {args.version1}")
+        print(f"Remaining entries for {args.version1}: {len(df1_filtered)}")
+        print(f"\nFiltered out {df2_zero_count} entries with 0ms from {args.version2}")
+        print(f"Remaining entries for {args.version2}: {len(df2_filtered)}")
 
-        print("\nSample extracted data from 1.1.0:")
-        sample_df2 = df2[['timestamp', 'milliseconds']].dropna().head()
-        print(sample_df2)
+        # Find all matching queries (not just regressions)
+        print("\nFinding all matching queries...")
+        all_matched_queries = find_all_matching_queries(df1_filtered, df2_filtered, time_threshold_ms=10000)
 
-        # Find matching queries with performance regressions
-        print("\nFinding matching queries with performance regressions...")
-        matched_queries = find_matching_queries(df1, df2, time_threshold_ms=500)
+        if len(all_matched_queries) > 0:
+            same_time_queries = all_matched_queries[all_matched_queries['ms_1_0_6'] == all_matched_queries['ms_1_1_0']]
+            print(f"Queries with exact same timing: {len(same_time_queries)}")
 
-        if len(matched_queries) > 0:
-            print(f"Found {len(matched_queries)} matching queries where 1.1.0 is slower than 1.0.6")
+            print(f"Found {len(all_matched_queries)} total matching queries between {args.version1} and {args.version2}")
 
-            # Analyze regressions
-            regression_analysis = analyze_query_regressions(matched_queries)
-            print("\nRegression Analysis:")
-            for key, value in regression_analysis.items():
-                if isinstance(value, float):
-                    print(f"  {key}: {value:.2f}")
-                else:
-                    print(f"  {key}: {value}")
+            # Get performance stats for just the matching queries
+            matching_stats1 = get_matching_query_stats(all_matched_queries, version_col='ms_1_0_6')
+            matching_stats2 = get_matching_query_stats(all_matched_queries, version_col='ms_1_1_0')
 
-            # Show top 5 worst regressions
-            print("\nTop 5 Worst Performance Regressions:")
-            top_regressions = matched_queries.nlargest(5, 'performance_regression')
-            for idx, row in top_regressions.iterrows():
-                print(f"  Regression: {row['performance_regression']:.0f}ms "
-                      f"({row['ms_1_0_6']:.0f}ms -> {row['ms_1_1_0']:.0f}ms, "
-                      f"ratio: {row['performance_ratio']:.2f}x)")
-                print(f"    Query: {row['query_text'][:80]}...")
-                print()
+            print(f"\n{args.version1} Performance Stats (Matching Queries Only):")
+            printItems(matching_stats1)
 
-            # Create regression analysis plots
-            print("\nGenerating regression analysis graphs...")
-            plot_matching_queries(matched_queries)
+            print(f"\n{args.version2} Performance Stats (Matching Queries Only):")
+            printItems(matching_stats2)
+
+            # Analyze performance regressions in both directions
+            print("\nAnalyzing performance changes in both directions...")
+            regressions_v2_slower = all_matched_queries[all_matched_queries['ms_1_1_0'] > all_matched_queries['ms_1_0_6']]
+            regressions_v1_slower = all_matched_queries[all_matched_queries['ms_1_0_6'] > all_matched_queries['ms_1_1_0']]
+
+            print(f"\nQueries where {args.version2} is slower than {args.version1}: {len(regressions_v2_slower)}")
+            if len(regressions_v2_slower) > 0:
+                regression_analysis_v2 = analyze_query_regressions(regressions_v2_slower, args.version1, args.version2)
+                print(f"\n{args.version2} Regression Analysis:")
+                printItems(regression_analysis_v2)
+                print(f"\nGenerating regression analysis graphs for {args.version2} slower cases...")
+                plot_matching_queries(regressions_v2_slower, args.version1, args.version2)
+
+            print(f"\nQueries where {args.version1} is slower than {args.version2}: {len(regressions_v1_slower)}")
+            if len(regressions_v1_slower) > 0:
+                regressions_v1_slower_swapped = regressions_v1_slower.copy()
+                regressions_v1_slower_swapped['performance_regression'] = regressions_v1_slower_swapped['ms_1_0_6'] - regressions_v1_slower_swapped['ms_1_1_0']
+                regressions_v1_slower_swapped['performance_ratio'] = regressions_v1_slower_swapped['ms_1_0_6'] / regressions_v1_slower_swapped['ms_1_1_0']
+
+                regression_analysis_v1 = analyze_query_regressions(regressions_v1_slower_swapped, args.version2, args.version1)
+                print(f"\n{args.version1} Regression Analysis:")
+                printItems(regression_analysis_v1)
+                plot_matching_queries(regressions_v1_slower_swapped, args.version2, args.version1)
+
         else:
-            print("No matching queries found with performance regressions.")
+            print("No matching queries found between the two datasets.")
 
-        # Create graphs
-        print("\nGenerating performance comparison graphs...")
-        create_timing_graphs(df1, df2, "1.0.6", "1.1.0")
-
-        print("\nGenerating summary statistics comparison...")
-        create_summary_stats_plot(stats1, stats2, "1.0.6", "1.1.0")
-
-        print("\nAnalysis complete! Check the generated PNG files for visual comparisons.")
+        print("\nAnalysis complete! Check the generated PNG files for visual comparisons (if plotting functions are available).")
 
     except Exception as e:
         print(f"Error: {e}")
