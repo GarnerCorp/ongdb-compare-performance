@@ -1,0 +1,69 @@
+Extracted 10000 entries from 1.0.6-logs.csv
+Valid entries with timestamp/ms: 7153
+Extracted 10000 entries from 1.1.0-logs.csv
+Valid entries with timestamp/ms: 7324
+
+Filtered out 2608 entries with 0ms from 1.0.6
+Remaining entries for 1.0.6: 4545
+
+Filtered out 2560 entries with 0ms from 1.1.0
+Remaining entries for 1.1.0: 4764
+Searching for matches in 4263 df1 entries and 4483 df2 entries...
+Found 4012 unique matching queries
+Queries with exact same timing: 629
+Found 4012 total matching queries between 1.0.6 and 1.1.0
+
+1.0.6 Performance Stats (Matching Queries Only):
+  total_matching_queries: 4012
+  avg_ms: 84.20
+  median_ms: 27.00
+  min_ms: 1
+  max_ms: 27823
+  std_ms: 619.90
+
+1.1.0 Performance Stats (Matching Queries Only):
+  total_matching_queries: 4012
+  avg_ms: 70.72
+  median_ms: 24.00
+  min_ms: 1
+  max_ms: 19862
+  std_ms: 456.60
+
+Queries where 1.1.0 is slower than 1.0.6: 614
+
+1.1.0 Regression Analysis: (Matching Queries Only):
+  total_matched_queries: 614
+  avg_regression_ms: 18.14
+  median_regression_ms: 3.00
+  max_regression_ms: 1183
+  min_regression_ms: 1
+  avg_performance_ratio: 1.83
+  median_performance_ratio: 1.14
+  max_performance_ratio: 162.00
+  worst_regression_query: MATCH (material:Material)-[:MANAGED_BY]->(material__oMANAGED_BY_FH__party:Party) WHERE material__oMA...
+  queries_with_2x_slowdown: 40
+  queries_with_5x_slowdown: 12
+  queries_with_10x_slowdown: 5
+
+Queries where 1.0.6 is slower than 1.1.0: 2769
+
+1.0.6 Regression Analysis: (Matching Queries Only):
+  total_matched_queries: 2769
+  avg_regression_ms: 23.55
+  median_regression_ms: 3.00
+  max_regression_ms: 7961
+  min_regression_ms: 1
+  avg_performance_ratio: 1.25
+  median_performance_ratio: 1.12
+  max_performance_ratio: 41.26
+  worst_regression_query: MATCH (material:Material)<-[:COMMENTING_ON]-(comment:Comment)-[:TAGGED_IN]->(user:User) WHERE commen...
+  queries_with_2x_slowdown: 54
+  queries_with_5x_slowdown: 11
+  queries_with_10x_slowdown: 4
+Plotting 4012 valid regression entries...
+Query performance comparison saved as 'plots/query_performance_comparison-1.0.6.png'
+
+Generating regression histogram comparing both versions...
+Slower query histogram saved as 'plots/slower_query_histogram-1.0.6-vs-1.1.0.png'
+
+Analysis complete! Check the generated PNG files for visual comparisons (if plotting functions are available).
